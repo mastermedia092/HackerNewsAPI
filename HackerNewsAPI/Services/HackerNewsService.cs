@@ -4,7 +4,7 @@ using Newtonsoft.Json;
 
 namespace HackerNewsAPI.Services;
 
-public class HackerNewsService(HttpClient httpClient, IMemoryCache cache)
+public class HackerNewsService(IHttpClientFactory httpClientFactory, IMemoryCache cache)
 {
     private const string BestStoriesUrl = "https://hacker-news.firebaseio.com/v0/beststories.json";
     private const string StoryDetailUrl = "https://hacker-news.firebaseio.com/v0/item/{0}.json";
@@ -15,6 +15,7 @@ public class HackerNewsService(HttpClient httpClient, IMemoryCache cache)
         var stories = new List<Story>();
 
         if (bestStoryIds == null) return stories.Where(s => true).OrderByDescending(s => s.Score).ToList();
+
         foreach (var batch in bestStoryIds.Take(count).Chunk(10))
         {
             var tasks = batch.Select(GetStoryDetailsAsync);
@@ -24,12 +25,12 @@ public class HackerNewsService(HttpClient httpClient, IMemoryCache cache)
         return stories.Where(s => true).OrderByDescending(s => s.Score).ToList();
     }
 
-
     private async Task<List<int>?> GetBestStoryIdsAsync()
     {
         if (cache.TryGetValue("BestStories", out List<int>? cachedIds)) return cachedIds;
 
-        var response = await httpClient.GetStringAsync(BestStoriesUrl);
+        using var client = httpClientFactory.CreateClient();
+        var response = await client.GetStringAsync(BestStoriesUrl);
         var ids = JsonConvert.DeserializeObject<List<int>>(response);
 
         cache.Set("BestStories", ids, TimeSpan.FromMinutes(5));
@@ -43,7 +44,8 @@ public class HackerNewsService(HttpClient httpClient, IMemoryCache cache)
         var url = string.Format(StoryDetailUrl, id);
         try
         {
-            var response = await httpClient.GetStringAsync(url);
+            using var client = httpClientFactory.CreateClient();
+            var response = await client.GetStringAsync(url);
             var storyData = JsonConvert.DeserializeObject<dynamic>(response);
 
             var story = new Story
@@ -51,7 +53,7 @@ public class HackerNewsService(HttpClient httpClient, IMemoryCache cache)
                 Title = storyData?.title,
                 Uri = storyData?.url ?? "",
                 PostedBy = storyData?.by,
-                Time = DateTimeOffset.FromUnixTimeSeconds((long) (storyData?.time ?? throw new InvalidOperationException())).UtcDateTime,
+                Time = DateTimeOffset.FromUnixTimeSeconds((long)(storyData?.time ?? throw new InvalidOperationException())).UtcDateTime,
                 Score = storyData.score ?? 0,
                 CommentCount = storyData.descendants ?? 0
             };
@@ -59,8 +61,9 @@ public class HackerNewsService(HttpClient httpClient, IMemoryCache cache)
             cache.Set($"Story_{id}", story, TimeSpan.FromMinutes(10));
             return story;
         }
-        catch
+        catch (HttpRequestException ex)
         {
+            Console.WriteLine($"Error fetching story with ID {id}: {ex.Message}");
             return null;
         }
     }
